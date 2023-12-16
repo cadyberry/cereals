@@ -1,0 +1,890 @@
+---
+title: "Project 2"
+author: "Acadia Berry"
+date: "2023-12-15"
+output:
+  html_document:
+    toc: true  
+    toc_float: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, echo = FALSE}
+library(tidyverse)
+library(ggplot2)
+library(GGally)
+library(broom)
+library(dplyr)
+library(Hmisc)
+library(olsrr)
+library(psych)
+library(gridExtra)
+library(cluster)
+library(factoextra)
+
+```
+
+# Data
+
+## Data prep
+
+```{r}
+raw_data <- read.csv("project2data.csv")
+
+data<- raw_data
+data <- data[-which(names(data) == "Rating")]
+
+# check for missing data 
+colSums(is.na(data))
+data <- na.omit(data)
+
+# add row names
+rownames(data) <- data$Name
+```
+
+## Summary statistics
+
+```{r}
+str(data)
+summary(data)
+```
+
+This data set consists of 77 rows and 12 variables about cereals with variables Name, Rating, Calories, Protein, Fat, Sodium, Carbo, Sugars, Potass, Weight, Vitamins and Fiber. All variables are numeric for the exception of Name.
+
+Three rows with missing data were identified and removed, leaving 74 data points left in the data set. Among the three rows, there were 4 missing data points: 1 in Carbo, 1 in Sugars and 2 in Potassium. Descriptive statistics, histograms and a correlation matrix of numeric variables were generated and basic exploratory data analysis provided insights about the shape, relationships and usability of the data for clustering.
+
+There are three variables in the final model: Calories, Sugar and Carbo. The distribution of these variables can be seen below in the histograms. For additional information about variable distributions, see Appendix A.
+
+## Histograms
+
+```{r}
+hist(data$Calories, 
+     col = "navy",            
+     border = "black",          
+     xlab = "Calories",      
+     ylab = "Frequency",
+     main = "Histogram of Calories") 
+table(data$Calories)
+```
+
+Calories has a range of 110, with a minimum of 50 and max of 160. The shape of the histogram appears somewhat normal with the highest frequency value (110) lying in the middle of the data. The median is 110 and mean is 106.9.
+
+```{r}
+
+hist(data$Carbo, 
+     col = "navy",            
+     border = "black",          
+     xlab = "Carbo",      
+     ylab = "Frequency",        
+     main = "Histogram of Carbo")
+table(data$Carbo)
+```
+
+Carbo ranges from 5 to 23. The shape of the histogram appears somewhat normal with the highest frequency values (13 and 15) lying in the middle of the data. The median is 14.5 and mean is 14.73.
+
+```{r}
+
+hist(data$Sugars, 
+     col = "navy",            
+     border = "black",          
+     xlab = "Sugars",      
+     ylab = "Frequency",        
+     main = "Histogram of Sugars")
+table(data$Sugars)
+```
+
+Sugars has a range of 0-15. There are two peaks in the data, around the 3 mark and 12 mark. The median is 7 and mean is 7.108.
+
+## Correlations Matrix
+
+```{r}
+cor(data[,-1], use="complete.obs")
+ggpairs(data[,-1])
+
+```
+
+From the correlations matrix, we see Fiber and Potass are highly correlated, with a Pearson's correlation coefficient of 0.912 which might skew model results as certain aspects within these features might measure the same characteristic and be overemphasized in the model. Weight and Calories is the next highest correlation at 0.696, but this size is not very close to the 0.8 threshold and if used in the model, the relationship shouldn't pose a problem.
+
+## Data Limitations
+
+**Sample Size**
+
+One limitation to the data set is the sample size. With 77 rows of data, it might be difficult to create clusters with larger values of *k* or use larger number of variables in the model. The small size could make it challenging to create a model with a sufficient amount of data points in each cluster. It could also mean the clusters are unstable or make it difficult to find any real pattern.
+
+**Unbalanced Variables**
+
+Another limitation to the data set is that Vitamins and Fiber are unbalanced variables. Incorporating these variables in the modeling process could lead to certain aspects of these variables being overemphasized, or it may make it difficult for the algorithm to cluster data points outside of the more prominent values. Because kmeans algorithm uses variable means to establish centroids, the algorithm is more sensitive to dominant values and smaller values could be seen as outliers meaning data points with these values might be harder to identify. Conversely, dominant values could pull the cluster in their direction, skewing the clusters. Outside of excluding these variables, a possible approach to addressing the imbalanced predictors is to incorporate resampling.
+
+**Missing Features**
+
+Assuming this data comes from the nutrition facts label found on most USDA approved foods, it appears as if there are a features missing such as saturated fat, trans fat, added sugar, etc. Having these variables might prove useful as total sugars and added sugars or trans fats and saturated fats measure different things (high fat does not necessarily mean a food is unhealthy, but having high trans fats is a good sign it is).
+
+Considering it is nutritional value being assessed, instead of having Vitamins as its own category, it might have been useful to have a variable representing each of the different kinds of vitamins. It is unclear what Vitamins is really measuring (total counts?). Perhaps accounting for each vitamin individually would eliminate the issue of balance. Additionally, it is unclear what the variable Weight represents, as it ranges from 0.5-1.5 (cups?), but in combination with weight, a variable that might have been beneficial to have is serving size. Some cereals are denser than others and using serving size and weight together measured in grams or ounces, more accurate conclusions could be drawn with information about the nutritional value.
+
+# K-means clusters
+
+**Subsetting data**
+
+```{r}
+
+# vars: Calories, Protein, Fat, Sodium, Carbo, Sugars, Potass
+clust_data <- dplyr:: select(data, Name, Calories, Protein, Fat, Sodium, Carbo, Sugars, Potass)
+rownames(clust_data) <- clust_data$Name
+z_clust_data <- scale(clust_data[,-1])
+
+
+# vars: Calories, Carbo, Sugars
+clust_data_3 <- dplyr:: select(data, Name, Calories, Carbo, Sugars)
+rownames(clust_data_3) <- clust_data$Name
+```
+
+Multiple combinations of variables and *k* clusters were used before settling on Carbo, Calories and Sugars as the best combination (see Appendix B). In addition to the ideal shape of these variables (normal distribution with a strong range of values) these variables were selected based on general nutrition knowledge.
+
+Most cereals are grains and contain mostly carbohydrates and only traces of the other two macronutrients, protein and fat. For this reason, Protein and Fat were dropped from the model and Carbo was kept. Additionally, sugar is known to be a more prominent ingredient in cereals often used to measure how "healthy" a food is by consumers. Calories was also included in the model as it provides information about the total energy of a product and is a measure many consumers turn to for a quick understanding of a products nutrition. Generally, foods high in Calories, Sugar and Carbohydrates are considered less healthy than those lower in these areas, however, there are exceptions like high calorie foods with high protein, or high carbohydrate foods with low sugar.
+
+## Z-standardization
+
+```{r}
+# standardize data
+z_clust_data_3 <- scale(clust_data_3[,-1]) # z standardize except fpr name colyumn
+
+
+# silhoutte method
+fviz_nbclust(z_clust_data_3, kmeans, method = "silhouette") + geom_vline(xintercept = 2, linetype = 2) +
+  labs(subtitle = "Silhouette Method")
+
+
+```
+
+Calories, Carbo and Sugars were standardized using z-scores and the silhouette method was used to determine the best number of clusters. The average silhouette scores of the first 10 *k-*means cluster results were plotted to see which value of *k* produces the largest width size. Results indicate the optimal number of clusters is either k = 2 or k = 4. These values were explored using the *kmeans* and *eclust* functions.
+
+***eclust*** **function, k = 4**
+
+```{r}
+
+# clustering using eclust
+set.seed(123)
+km.4<- eclust(z_clust_data_3, "kmeans", k=4, graph = FALSE, hc_metric = "euclidean")
+km.4
+# cluster plot
+fviz_cluster(km.4, geom = "point", ellipse.type = "norm", palette = "jco", ggtheme = theme_minimal())
+
+# cluster silhoutte plot
+fviz_silhouette(km.4, palette = "jco", ggtheme = theme_classic())
+
+
+```
+
+Using the *eclust* function, 4 clusters were produced using the z-standardized variables Sugars, Carbo and Calories. The cluster sizes are somewhat unbalanced, with sizes 5, 7, 30 and 32, but the average silhouette widths for each cluster show an improvement from prior trials with values 0.52, 0.45, 0.49 and 0.44. In the cluster plot, with the implementation of PCA for visualization, we can see there are clear defined, clearly separated clusters with only slight overlap in comparison to previous trials (see Appendix Bb and Bc).
+
+The average silhouette width is 0.47, which is on the cusp of being good evidence for meaningful clusters or an indication of a good fit. For contrast, the *kmeans* function was also run with the z-standardized variables Calories, Sugars and Carbohydrates.
+
+***k-means*** **function, k = 4**
+
+```{r}
+
+set.seed(124)
+km4_stan <- kmeans(z_clust_data_3, centers=4)
+#km4_stan 
+
+# cluster sizes
+table(km4_stan$cluster)
+
+# cluster centers
+clust_data$km4_stan <- km4_stan$cluster
+km4_stan$centers
+
+# between sum of squares 
+km4_stan$betweenss
+
+# within sum of squares
+km4_stan$withinss
+
+# total sum of squares
+km4_stan$totss
+
+# cluster assignments
+rownames(clust_data)[clust_data$km4_stan == 1]
+rownames(clust_data)[clust_data$km4_stan == 2]
+rownames(clust_data)[clust_data$km4_stan == 3]
+rownames(clust_data)[clust_data$km4_stan == 4]
+```
+
+The total sum of squares cluster variability is 73.2%. After trying multiple combinations of variables with different cluster sizes, this model provides the largest amount of variability accounted for in the analysis. The within-cluster sum of squares are all relatively low, at 5.61, 27.21, 5.5 and 20.35, suggesting the points within each cluster are close to the centroids. The smaller values, 5.61 and 5.5 belong to the clusters with sizes 5 and 7, so its logical these within-sum of squares values would be smaller as less data typically means less variability and the values signifies how close data points are to the cluster centroid. The between-sum of squares is 160.33, which is large compared to the within-cluster variation, suggesting good separation between clusters.
+
+Despite setting different seeds, the results of *eclust* and *kmeans* functions produce the same results, both producing clusters with sizes 5, 7, 32 and 30 and identical cluster means. This is a good sign, indicating a consistent pattern has been identified, regardless of the initial cluster center placement.
+
+## Min-max normalization
+
+To see if normalizing the data oppose to standardizing the data would have an effect on the clustering, the subset of data containing Carbo, Sugars and Calories was normalized and a silhouette plot was produced. The plot indicates using k = 2 or k = 4 clusters produces the largest average silhouette widths, suggesting the best fit.
+
+```{r}
+min_max_norm <- function(x) {
+    (x - min(x)) / (max(x) - min(x))
+  }
+
+norm_clust_data <- as.data.frame(lapply(clust_data_3[2:4], min_max_norm))
+summary(norm_clust_data)
+
+```
+
+The normalized data using variables Sugars, Carbo and Calories was used with the *eclust* function and k = 4 clusters to assess the impact of normalization in comparison to the best fitting model so far: k = 4 with the standardized variables Calories, Sugars, and Carbo.
+
+***eclust*** **function: k = 4**
+
+```{r}
+
+set.seed(123)
+km.4<- eclust(norm_clust_data, "kmeans", k=4, graph = FALSE, hc_metric = "euclidean")
+
+# cluster plot
+fviz_cluster(km.4, geom = "point", ellipse.type = "norm", palette = "jco", ggtheme = theme_minimal())
+
+# silhoutte plot
+fviz_silhouette(km.4, palette = "jco", ggtheme = theme_classic())
+
+# cluster centers
+table(km.4$cluster)
+km.4$centers
+```
+
+Normalizing the data seems to have brought the clusters closer to one another. For the most part, the original shape (compared to z-standardized data) is retained with cluster 2 being on the bottom, cluster 3 in the top left, cluster 4 in the bottom right and cluster 1 on top. However, cluster 1 has appeared to have rotated, or is drawn more toward the middle. All four clusters are now touching.
+
+Normalization is sensitive to outliers, so it is possible that the bulk of the points are pulled in the direction of the extreme points, widening the shape of each of the clusters. Additionally, standardization preserves the relationships between data by recreating a new scale for each variable using the standard deviation, while normalization changes all of the scales from 0-1. Because the relationships are less well preserved with the normalized data, we see the data points have lost some of their uniqueness and were brought together, making it more challenging to be separated.
+
+***kmeans*** **function: k = 4**
+
+```{r}
+set.seed(125)
+km4_norm <- kmeans(norm_clust_data, centers=4)
+#km4_norm
+table(km4_norm$cluster)
+
+clust_data$km4_norm <- km4_norm$cluster
+km4_norm$centers
+
+km4_norm$withinss
+km4_norm$betweenss
+km4_norm$totss
+
+
+rownames(clust_data)[clust_data$km4_norm == 1]
+rownames(clust_data)[clust_data$km4_norm == 2]
+rownames(clust_data)[clust_data$km4_norm == 3]
+rownames(clust_data)[clust_data$km4_norm == 4]
+
+
+```
+
+The cluster sizes changed from 5, 7, 30 and 32 in the standardized data to 17, 22, 5 and 30. The total sum of squares is 73.8% capturing slightly more variability than the standardized data. The between-sum of squares is 8.55 and within-cluster sum of squares is 0.6125, 0.679, 1.591 and 0.521, so comparatively, the between sum of squares is far larger. When ran multiple times in a row under different seeds, results end up slightly different each time which shows the pattern may not be as strong or consistent as it is with the standardized data, posing problems for interpretation and generalizability.
+
+For further examination of the impact of normalization on the clustering, the cluster means and cereal names between the standardized and normalized data for variables Calories, Sugars and Carbo were compared:
+
+```{r}
+km4_stan$centers
+km4_norm$centers
+```
+
+```{r}
+
+rownames(clust_data)[clust_data$km4_norm == 3]
+rownames(clust_data)[clust_data$km4_stan== 1]
+```
+
+Cluster 3 from the normalized data and cluster 1 from the standardized data contains the same 5 cereals, 100% Bran, All-Bran, All-Bran with Extra Fiber, Puffed Rice and Puffed Wheat. From the cluster means, we see these cereals are very low calorie (-2.47 or 0.07), very low carb (-1.58 or 0.20) and low sugar (-1.13 or 0.14), compared to the average.
+
+```{r}
+rownames(clust_data)[clust_data$km4_norm == 2]
+rownames(clust_data)[clust_data$km4_stan== 2]
+```
+
+Cluster 2 (standardized and normalized) contains cereals with lower than average Calories (-2.47 or 0.49) and Sugars (-0.866 or 0.176) but higher than average Carbo (0.76 or 0.78). However, with the normalized data, Carbo is proportionally more significant in this cluster. On a scale of 0-1, the difference between 0.54 (mean of normalized data for Carbo) and 0.783 (cluster mean for Carbo) represents a greater amount than the difference between the standardized data (with a range of -2.5 - 2.125) mean of 0 and a cluster mean of 0.763. This might show how the normalized data is more susceptible to outliers because Carbo is more heavily emphasized in this cluster. Comparing the cereal names, we see there are many of the same cereals in each cluster, but cluster 2 with standardized data contains 8 more, like Bran Chex, Bran Flakes and Great Grains Pecan.
+
+```{r}
+rownames(clust_data)[clust_data$km4_norm == 4]
+rownames(clust_data)[clust_data$km4_stan== 4]
+
+```
+
+From the cluster means, we see cluster 4 from both transformed data contains cereals with above average Calories, below average Carbo and the highest average Sugars. However, with the normalized data, this cluster has the highest mean for Calories (0.63 on a scale of 0 to 1) while with the standardized data, it is the second highest (0.244, where 2.69 is the max).
+
+Cluster 4 with the normalized data appears almost the same as cluster 4 from the standardized data with the addition of muesli cereals. Overall this cluster from both groups appear to be the high-sugar cereals.
+
+```{r}
+
+rownames(clust_data)[clust_data$km4_norm == 1]
+rownames(clust_data)[clust_data$km4_stan== 3]
+
+```
+
+When it comes to cluster 1 of the normalized data and cluster 3 of the standardized data, results begin to diverge. Cluster 1 (normalized) has slightly lower than average calories (0.487), slightly above average Carbo (0.508) and lower Sugars (0.427). Cluster 3 (standardized) has the highest above average calories (1.88), higher Carbo (0.73) and higher Sugars (0.762). Because the cluster means of the normalized data hover around the 0.5 mark, the insights are less meaningful as unique patterns/characteristics do not stand out.
+
+**Testing and training set**
+
+A training and testing set were created with a 60/14 split. The data was standardized with the z-score and as before, the *eclust* and *kmeans* functions were ran to create 4 clusters. This validation method proved to be unsuccessful (see Appendix F).
+
+Different variations of training/testing set sizes were attempted but there are still not enough data points to plot all of the clusters in the plot or obtain well-fitting clusters. For example, with k = 4 and a training set size of 60, the average silhouette width falls to 0.26 and neither the test or train clustering plot can be completed, due to a lack of data. In another circumstance, it might be worth reducing the number of clusters, but from what we've seen previously in the analysis, k = 2 or k = 3 does not make sense with this data.
+
+# Conclusion & Discussion
+
+## Final Model
+
+The final model includes the standardized variables Carbo, Calories and Sugars and k = 4 clusters. As before, the model was constructed using both the *kmeans* and *eclust* functions. This model was also compared to the model from assignment 10. Interpretation of the final model output is as follows:
+
+### ***kmeans*** **function**
+
+```{r}
+
+set.seed(124)
+
+# clustering with kmeans
+km4_stan <- kmeans(z_clust_data_3, centers=4)
+#km4_stan 
+
+# cluster sizes
+table(km4_stan$cluster)
+
+# cluster centers
+clust_data$km4_stan <- km4_stan$cluster
+km4_stan$centers
+
+# between sum of squares 
+km4_stan$betweenss
+
+# within sum of squares
+km4_stan$withinss
+
+# total sum of squares
+km4_stan$totss
+
+# cluster assignments
+rownames(clust_data)[clust_data$km4_stan == 1]
+rownames(clust_data)[clust_data$km4_stan == 2]
+rownames(clust_data)[clust_data$km4_stan == 3]
+rownames(clust_data)[clust_data$km4_stan == 4]
+
+```
+
+**Pure Grain Cereals**
+
+Cluster 1 from the *kmeans* function contains cereals with lower than average Calories (-2.47), Sugars (-1.126) and Carbo (-1.57). There are five cereals in this cluster. Cereals containing bran are in this cluster, as well as Puffed Rice and Puffed Wheat. Generally, these cereals are known for being healthy choices to most cereals, with simple ingredients, so it makes sense they would rank low in these three areas and be grouped as such.
+
+**Low-sugar Cereals**
+
+Cluster 2 from the *kmeans* function contains 30 cereals with lower than average Calories (-0.287) and Sugars (-0.86) but higher than average Carbo (0.763). Some of these cereals are Corn Chex, Bran Chex, Grape Nuts, Corn Flakes and Cheerios. It makes sense these cereals would be grouped in this way as generally many of these cereals are known for being less sweet. Although these cereals have higher than average carbohydrates, because cereals contain mostly carbohydrates, it can these cereals likely get their carbohydrates from the grains themselves and not added sugars.
+
+**Fruit & Nut cereals**
+
+Cluster 3 contains cereals with higher than average Calories (1.877), Sugars (0.73) and Carbo (0.762). The 7 cereals in this cluster all contain some kind of dried fruit or nuts. Dried fruits and nuts are denser foods, and nuts contain a lot of protein and fat, where dried fruits contain a lot of sugar, therefore, these cereals would have more than the average calories.
+
+**Sweet Treat Cereals**
+
+Cluster 4 contains cereals with slightly above average Calories (0.244), the highest average Sugars (0.821) and lower than average Carbo (-0.629). There are 32 cereals in this cluster. Skimming the list, we see cereals known for being sweet and sugary such as Cocoa Puffs, Trix, Lucky Charms, Frosted Flakes and Cap' n' Crunch. Interestingly, 100% Natural Bran was placed in this cluster when by the sound of it, should have been in cluster 1.
+
+### ***eclust*** **function**
+
+```{r}
+# clustering with eclust
+set.seed(123)
+km.4<- eclust(z_clust_data_3, "kmeans", k=4, graph = FALSE, hc_metric = "euclidean")
+
+# cluster plot
+fviz_cluster(km.4, geom = "point", ellipse.type = "norm", palette = "jco", ggtheme = theme_minimal())
+
+# cluster silhoutte plot
+fviz_silhouette(km.4, palette = "jco", ggtheme = theme_classic())
+
+km.4$withinss
+km.4$betweenss
+km.4$centers
+
+```
+
+**Pure Grain Cereals**
+
+Cluster 1 from the *eclust* function is the same cluster as cluster 1 from the *kmeans* function. From the cluster plot, we can see cluster 1 (blue) is most clearly separated from the other clusters, suggesting it is the most different from the rest. This is reflected in the cluster means, which have the most extreme (negative) values for each variable. Cluster 1 has the largest average silhouette width, 0.52 and a low within-sum of squares, 5.612 suggesting sufficient "tightness" within the cluster compared to the between sum of squares, 160.33.
+
+**Low Sugar Cereals**
+
+Cluster 4 from the *eclust* function represents the same cluster as cluster 2 from the *kmeans* function: lower than average calorie, lower than average sugar and higher than average carbo cereals. From the cluster plot, we see cluster 4 (red) overlaps slightly with cluster 2 and 3. The within sum of squares is 27.21 which despite being the largest, is still relatively small compared to the between sum of squares. However, from the cluster plot, we see this cluster does have the more overlap with other clusters than any of the other 3. From the clusters silhouette plot, we see there is one potential misclassification, which is likely the same point from the cluster plot, sitting between cluster 1 and cluster 4.
+
+**Fruit & Nut Cereals**
+
+Cluster 2 from the *eclust* function represents the same cluster as cluster 3 from the *kmeans* function: higher than average calorie, higher than average sugar and higher than average carbo cereals. In the cluster plot, cluster 2 (yellow) appears the farthest away from cluster 1, with some overlap between clusters 3 and 4. Perhaps this is due to the fact this cluster has the opposite characteristics of cluster 1 with the high Calories, high Carbo and high Sugars. Of all the clusters, Cluster 2, the fruit and nut cereals, have the highest above average Calories (1.78) while cluster 1, the "healthy" cereals have the lowest below average calories (-2.47), furthering the divide. These figures (absolute value) are the two largest cluster means within all clusters. Cluster 2 has an average silhouette width of 0.45, which means it is almost sufficient evidence for being a well-fitting cluster. The within sum of squares is 5.50, only slightly lower than that for cluster 1 (5.61), which is represented in the slight overlap with clusters 3 and 4 that cluster 1 does not have.
+
+**Sweet Treat Cereals**
+
+Cluster 3 from the *eclust* function represents the same cluster as cluster 4 from the *kmeans* function: slightly higher than average calories, higher than average sugar and lower than average carb cereals. These cereals have the most in common with the low sugar cereals, represented by the overlap between clusters 3 and 4. This is interesting considering the center means are almost the inverse of each other (0.244 and -0.287 for calories, -0.629 and 0.763 for Carbo and 0.821 and -0.867 for Sugars), but perhaps the close-to-center means for Calories in each of these clusters makes it more challenging for the algorithm to extract the differences. The within sum of squares for cluster 3 is 20.345, which is third largest.
+
+**Assignment 10 comparison**
+
+```{r}
+
+set.seed(123)
+clust_data_4 <- dplyr:: select(data, Name, Sugars, Protein, Fiber, Fat)
+rownames(clust_data_4) <- clust_data$Name
+
+# standardize data
+z_clust_data_4 <- scale(clust_data_4[,-1])
+
+km4_4 <- kmeans(z_clust_data_4, centers=4)
+
+# cluster sizes
+table(km4_4$cluster)
+clust_data$km4_4 <- km4_4$cluster
+#km4_4
+km4_4$centers
+km4_4$betweenss
+km4_4$withinss
+km4_4$totss
+
+# cluster assignments 
+rownames(clust_data)[clust_data$km4_4 == 1]
+rownames(clust_data)[clust_data$km4_4 == 2]
+rownames(clust_data)[clust_data$km4_4 == 3]
+rownames(clust_data)[clust_data$km4_4 == 4]
+```
+
+In assignment 10, variables Fiber, Protein, Fat and Sugars were used with z-standardized data to create k = 2, k = 3, and k = 4 clusters. It was decided k = 4 was the optimal choice as it had the highest overall variability explained at 58.5%.
+
+There are some similarities in the clustering findings between both models. For example, cluster 1 in assignment 10 contained three Bran cereals, 100%\_Bran, All-Bran, and All-Bran_with_Extra_Fiber. In cluster 1 in the final model, Puffed Wheat and Puffed Rice were added to this cluster. In both models, these cereals are known for being the healthiest compared to the rest the cereals, given that they have the lowest average Sugar (and Carbo and Calorie) content. From assignment 10, we know this group contains high-fiber cereals, which despite Fiber being excluded from the model, still was able to group these cereals together.
+
+Cluster 4 from assignment 10 is clearly high-sugar ("unhealthier") cereals like Lucky Charms, Froot Loops, Apple Jacks and Corn Pops. This model is able to group those very high-sugar cereals together, but it misses many of them like Frosted Flakes and Golden Grahams which were included in one cluster in the final model.
+
+The interpretation of clusters 2 and 3 from assignment 10 pose a challenge. It is true that many of the cereals within each cluster are similar to each other (grouping all Chex cereals together in cluster 2 and all of the muesli cereals together in cluster 3), but the other cereals within clusters 2 and 3 aren't as similar (like having Cheerios and muesli in the same cluster).
+
+```{r}
+
+# silhoutte method
+fviz_nbclust(z_clust_data_4, kmeans, method = "silhouette") + geom_vline(xintercept = 2, linetype = 2) +
+  labs(subtitle = "Silhouette Method")
+
+
+# clustering using eclust
+set.seed(123)
+km.4<- eclust(z_clust_data_4, "kmeans", k=4, graph = FALSE, hc_metric = "euclidean")
+
+# cluster plot
+fviz_cluster(km.4, geom = "point", ellipse.type = "norm", palette = "jco", ggtheme = theme_minimal())
+
+# cluster silhoutte plot
+fviz_silhouette(km.4, palette = "jco", ggtheme = theme_classic())
+
+# cluster sizes
+table(km.4$cluster)
+
+# cluster centers
+km.4$centers
+
+```
+
+Further analysis of the final model from assignment 10, using Sugars, Fiber, Protein and Fat with the z-standardized data and k = 4, suggests it would not be a strong final model. The silhouette method to identify the optimal number of clusters and the eclust function to visualize the clusters was used. When the optimal value, k = 4 clusters was used, the overall average silhouette length is only 0.35. The cluster containing the healthy bran cereals (cluster 2 in this case) has the highest average width at 0.55 but only contains three cereals. Additionally, the lowest silhouette width is 0.24, which is lower than any of the average widths in the final model, therefore, whatever information is drawn from this clustering, is not very reliable. Looking at the cluster plot, there is significant overlap between the clusters, and only having 3 data points in cluster 2 has made R unable to plot the cluster. This model provided helpful preliminary information, highlighting cereals with high fiber or high sugar, but the results are not reliable or generalizable.
+
+## Data limitations
+
+**Overfitting**
+
+Small data sets also pose a risk for overfitting. If patterns are found within the data, these patterns are more likely to be from random noise or characteristics unique to the data set rather than meaningful, generalizable patterns. Typically to assess overfitting a testing and training set is constructed and the model is created with the training set and run on the witheld data to see how well it performed. However, in this case, this was not possible. When the data set was split into training (60 rows) and a testing set (14 rows), there were not enough data points to have even one data point in each of the *k* clusters. This problem is heightened when some clusters have only 5 or 7 data points in them, like the clusters produced from this model did. Even with a reduced number of variables (3) and reduced cluster size (k = 3), it was not possible to compare results of the test set because even if there were enough points to have a data point in each cluster, it would be so few that results wouldn't be reliable.
+
+**Inconsistency**
+
+Small data sets make it challenging to extract meaningful patterns. For example, using z_clust_data (a subset of 7 variables) and running k-means clustering with k = 2, if run multiple times in a row, cluster sizes alternated between a 14/60 a 26/48 and 38/35 split. Part of this may be due to the fact that despite the silhouette plots and elbow plots suggesting k = 2 was the best option, there is no easy way to split this data into two clusters. Depending on where the original centroid was placed, the algorithm picked up on different patterns within the data each trial, but with a larger data set, this might not have been the case as a true pattern might be have been more clear.
+
+**Generalizability**
+
+Its important to note that, despite having the best results of all trials, the final model is not generalizable and insights must be interpreted cautiously. The average silhouette width for the final model is 0.47, which is only on the cusp of being significant evidence for a good fit. The insights from assessing cluster means may be better as grounds for further analyses and models, rather than definitive evidence of cereals having certain characteristics.
+
+# Appendix
+
+## Appendix A
+
+**Histograms**
+
+```{r}
+hist(data$Protein, 
+     col = "navy",            
+     border = "black",          
+     xlab = "Protein",      
+     ylab = "Frequency",
+     main = "Histogram of Protein") 
+table(data$Protein)
+```
+
+Protein has a range of 1-6. The histogram indicates there are only 5 different values in the set. The shape is somewhat normal, with 3 as the value with the highest frequency. The median is 2.5 and mean is 2.514.
+
+```{r}
+hist(data$Fat, 
+     col = "navy",            
+     border = "black",          
+     xlab = "Fat",      
+     ylab = "Frequency",        
+     main = "Histogram of Fat") 
+table(data$Fat)
+
+```
+
+Fat has a range of 0-5. The histogram indicates there are only 5 different values in the set. The shape is somewhat normal, with one peak, and 1 as the value with the highest frequency. The median is 1 and mean is 1.
+
+```{r}
+hist(data$Sodium, 
+     col = "navy",            
+     border = "black",          
+     xlab = "Sodium",      
+     ylab = "Frequency",        
+     main = "Histogram of Sodium")
+```
+
+Sodium has a range of 0-320. The shape of the histogram is normal, with one peak. The median is 180 and mean is 162.4.
+
+```{r}
+hist(data$Potass, 
+     col = "navy",            
+     border = "black",          
+     xlab = "Potass",      
+     ylab = "Frequency",        
+     main = "Histogram of Potass")
+
+```
+
+Potass is right tailed with the largest values residing between 0-50. Potass has a range of 15-330. The mean is 90 and median is 98.51.
+
+```{r}
+hist(data$Vitamins, 
+     col = "navy",            
+     border = "black",          
+     xlab = "Vitamins",      
+     ylab = "Frequency",        
+     main = "Histogram of Vitamins") 
+table(data$Vitamins)
+```
+
+The histogram of Vitamins shows this data is unbalanced. The range is 0-100 and mode is 25 where the majority of the data lie. There are only 3 distinct values, 0, 25 and 100. Given the unbalanced nature, it might not be beneficial to include it in the clustering analysis as cereals with values for Vitamins of 25 would be overemphasized.
+
+```{r}
+hist(data$Weight, 
+     col = "navy",            
+     border = "black",          
+     xlab = "Weight",      
+     ylab = "Frequency",        
+     main = "Histogram of Weight") 
+table(data$Weight)
+
+```
+
+The histogram of Weight shows this variable is unbalanced. The range is 0.5-1.5. There are 7 distinct values, but 61 of the 74 data points take on the value of 1. Given the unbalanced nature, it might not be beneficial to include it in the clustering analysis as cereals with Weight = 1 might be overemphasized.
+
+```{r}
+
+hist(data$Fiber, 
+     col = "navy",            
+     border = "black",          
+     xlab = "Fiber",      
+     ylab = "Frequency",        
+     main = "Histogram of Fiber")
+table(data$Fiber)
+
+```
+
+Fiber has a range of 0-15. The shape of the histogram is right-tailed with a mode of 0. The median is 2 and mean is 2.176.
+
+## Appendix B
+
+**Subset of 7 variables**
+
+The data frame clust_data is a subset of the data that contains Calories, Protein, Fat, Sodium, Carbo, Sugars, Potass. Out of the 11 available variables, Weight, Vitamins, Fiber and Rating were excluded from this subset. Weight and Vitamins were removed due to their imbalanced distribution and limited ranges of unique values. In Vitamins, 62 of the data points take on the value "25", 6 take on the value "0" and 6 take on the value "100". Weight is also imbalanced, with 61 data points taking on the value "1", and the other 13 data points taking on 6 different values ranging between 0.5 and 1.5.
+
+To address multicollinearity between Fiber and Potass, Fiber was removed. Potass and Fiber are both right-tailed, but Potass appears to provide more information, with a larger number of unique values. This subset of variables were standardized using z-scores and stored in the vector z_clust_data.
+
+```{r}
+# vars: Calories, Protein, Fat, Sodium, Carbo, Sugars, Potass
+clust_data <- dplyr:: select(data, Name, Calories, Protein, Fat, Sodium, Carbo, Sugars, Potass)
+
+# assign row names 
+rownames(clust_data) <- clust_data$Name
+
+# standardize data
+z_clust_data <- scale(clust_data[,-1])
+
+# correlations plot
+z_clust_frame<- as.data.frame(z_clust_data)
+
+#ggpairs(z_clust_frame[,1:7])
+summary(z_clust_data)
+
+```
+
+## Appendix Ba
+
+**Determining optimal cluster size**
+
+To determine the optimal number of clusters using z_clust_data, the Elbow method and Silhoutte method were implemented. These methods are an indication of goodness of fit of data within the cluster(s) which account for cluster separation and cohesion. Silhoutte width is calculated using the Euclidean distance while the Elbow Method uses sum of squares values. Higher average silhouette values for the silhouette plot indicate a better fit, while lower sum of squares values in the elbow plot indicate better fitting clusters.
+
+```{r}
+# silhoutte method
+fviz_nbclust(z_clust_data, kmeans, method = "silhouette") + geom_vline(xintercept = 2, linetype = 2) +
+  labs(subtitle = "Silhouette Method")
+
+# elbow method
+fviz_nbclust(z_clust_data, kmeans, method = "wss") + geom_vline(xintercept = 2, linetype = 2) +
+  labs(subtitle = "Elbow Method")
+
+```
+
+According to the results of the silhouette method, the optimal number of clusters is k = 2 or k = 8. However, the average silhouette width for either of these values is no greater than 0.4. This means that there is some evidence to suggest the clusters are a good fit, but it is not sufficient. However, at k = 8, and a data set size of only 74, it means some clusters will have few data points and the integrity of the clusters comes into question.
+
+For contrast, the Elbow Method was also used to determine the optimal number of clusters. This method calculates and uses the within sum of squares values for each cluster and plots these values. The results of the elbow method show the optimal number of clusters is k = 2 where larger cluster sizes change the within cluster sum of squares and do not improve the total within sum of squares values. Both cluster sizes k = 2 and k = 8 were tested using the kmeans functions.
+
+## Appendix Bb
+
+***k*** **= 2**
+
+```{r}
+set.seed(123)
+
+# k = 2
+km2 <- kmeans(z_clust_data, centers=2)
+km2
+
+# cluster totals 
+table(km2$cluster)
+
+# cluster centers
+clust_data$km2 <- km2$cluster
+km2$centers
+
+rownames(clust_data)[clust_data$km2 == 1]
+rownames(clust_data)[clust_data$km2 == 2]
+
+
+# visualization
+km.2<- eclust(z_clust_data, "kmeans", k=2, graph = FALSE, hc_metric = "euclidean")
+
+# principal components
+fviz_cluster(km.2, geom = "point", ellipse.type = "norm", palette = "jco", ggtheme = theme_minimal())
+fviz_silhouette(km.2, palette = "jco", ggtheme = theme_classic())
+
+
+
+```
+
+The kmeans function was used with the standardized subset of data, z_clust_data with k = 2 clusters. The total cluster sum of squares is 18.7%, or the total proportion of variation in the data explained by this clustering. The within cluster sum of squares for Cluster 1 is 88.33, and for Cluster 2 is 327.26. In this case, the between sum of squares is not large compared to the total sum of squares, yielding a low total sum of squares value. 18.7% is not ideal and k = 8, was explored.
+
+Assessing the cluster means, we see many of the variables have cluster means close to 0 for the exception of Protein for cluster 2, (0.953) and Potass for cluster 2 (0.93). We know by skimming the list of cereals that all cereals within cluster 2 cannot be characterized by these traits and the remaining cluster means are not far enough from the mean to draw meaningful conclusions from. For each of these reasons, we know k = 2 is not an appropriate number of clusters for this data using these variables.
+
+The average silhouette width for k = 2 is 0.21 which is poor evidence for good clustering. There is significant overlap between the two clusters in the cluster plot and some signs of misclassification in cluster 2 as a few of the widths appear to be negative.
+
+## Appendix Bc
+
+***k*** **= 8**
+
+```{r}
+
+# k = 8
+set.seed(123)
+km8 <- kmeans(z_clust_data, centers=8)
+km8
+table(km8$cluster)
+
+# cluster centers
+clust_data$km8 <- km8$cluster
+km8$centers
+
+
+# between sum of squares 
+km8$betweenss
+
+rownames(clust_data)[clust_data$km8 == 1]
+rownames(clust_data)[clust_data$km8 == 2]
+rownames(clust_data)[clust_data$km8 == 3]
+rownames(clust_data)[clust_data$km8 == 4]
+rownames(clust_data)[clust_data$km8 == 5]
+rownames(clust_data)[clust_data$km8 == 6]
+rownames(clust_data)[clust_data$km8 == 7]
+rownames(clust_data)[clust_data$km8 == 8]
+```
+
+For k = 8 clusters, the total cluster sum of squares is 72.1% which is an improvement from k = 2 clusters. The within-cluster sum of squares for each of the 8 clusters is far lower than those with k = 2 clusters, with the greatest value being 33.86. This indicates the data points within the clusters are "tighter" to the center than they are with k = 2. Along with an improvement of the lower total cluster sum of squares, assessing the cereal brand names in each cluster shows cereals with similar qualities/names were grouped together like "chex" and "flakes" together in one cluster (corn-based cereals), and "wheats" (wheat-based cereals) in another cluster, and sugary cereals like Cap'n' Crunch and Coacoa Puffs in another cluster. However, there are some clusters that contain only 2 or 3 cereals.
+
+When assessing the cereals in these smaller clusters, we do see some of the characteristics of the cereals in the smaller clusters are distinct:
+
+Cluster 7 contains dense cereals, like Cracklin' Oat Bran or cereals with nuts/fruits in them like muesli.
+
+Cluster 2 contains only bran cereals: 100% Bran, All Bran and All Bran with Extra Fiber and has lower than average calories (z = -2.2), higher than average potassium (z = 2.98), and lower than average carbohydrates (-2.07).
+
+Cluster 8 contains 2 cereals: Cheerios and Special K. Cluster means show these cereals have higher than average protein, with a z-score of 3.24, which is also the maximum z-score for this variable.
+
+Although the smaller clusters do contain distinct features, it begs the question, are these features important enough to warrant keeping them as their own cluster? Is potassium or protein content relevant in the context of grouping cereals, especially if the group is so small? Can a cluster this small be validated? Additionally, the average silhouette width using k = 8 clusters is 0.32, which is some, but not sufficient evidence of goodness of fit.
+
+The use of k = 8 clusters was explored further with visualizations using a cluster plot and silhouette plot.
+
+```{r}
+set.seed(123)
+
+# k = 8
+km.8<- eclust(z_clust_data, "kmeans", k=8, graph = FALSE, hc_metric = "euclidean")
+
+# principal components
+fviz_cluster(km.8, geom = "point", ellipse.type = "norm", palette = "jco", ggtheme = theme_minimal())
+fviz_silhouette(km.8, palette = "jco", ggtheme = theme_classic())
+
+table(km.8$cluster)
+km.8$centers
+```
+
+Despite the total sum of squares value being the greatest for k = 8 in previous steps of the analysis (72.1% of variability explained), and the silhouette widths for clusters 2 and 4 reaching or exceeding 0.5 with no signs of misclassifications, the average silhouette width is still low: 0.32. Additionally, the cluster plot shows there is a great amount of overlap among clusters. There is not one cluster that has clear separation which poses issues for interpretability and generalizability.
+
+## Appendix C
+
+**Testing different values of *k***
+
+To better understand how the total cluster variation changes with different values of k, as well as the cluster sizes, kmeans was run for k = 2, k = 3... k = 8.
+
+```{r}
+set.seed(123)
+
+# k = 2
+km2 <- kmeans(z_clust_data, centers=2)
+# km2 # 18.7 %
+table(km2$cluster)
+#  1  2 
+# 60 14
+set.seed(123)
+# k = 3
+km3 <- kmeans(z_clust_data, centers=3)
+# km3 #34.4 %
+table(km3$cluster)
+# 1 2 3
+# 32 39 3
+set.seed(123)
+# k = 4
+km4 <- kmeans(z_clust_data, centers=4)
+# km4 #  49.3 %
+table(km4$cluster)
+#  1  2  3  4 
+# 14 21 18 21 
+set.seed(123)
+# k = 5
+km5 <- kmeans(z_clust_data, centers=5)
+# km5 # 57.5 %
+table(km5$cluster)
+ #  1  2  3  4  5 
+#  7 18 21 19  9 
+set.seed(123)
+# k = 6
+km6 <- kmeans(z_clust_data, centers=6)
+# km6  # 64.1 %
+table(km6$cluster)
+# 1  2  3  4  5  6 
+# 16  3 20 10  9 16 
+
+set.seed(123)
+# k = 8
+km8 <- kmeans(z_clust_data, centers=8)
+# km8  #  68.3 %
+table(km8$cluster)
+# 1  2  3  4  5  6  7  8 
+#  3 19 10  9 10  5  2 
+
+
+```
+
+As the number of clusters increased, the total amount of variability explained increases as well. However, with more than 4 clusters, the size of the clusters comes into question as some clusters only contain 3 or 4 data points. Although having 8 clusters may account for the most variability, the clusters might not have enough integrity to warrant their presence.
+
+## Appendix D
+
+**All variables**
+
+To see if results would change or improve, a model was built with all variables: Calories, Protein, Fat, Sodium, Carbo, Sugars, Potass, Weight, Vitamins and Fiber. The silhouette method was used to determine the optimal number of clusters to compare to the results of using only Calories, Protein, Fat, Sodium, Carbo and Potass.
+
+```{r}
+
+clust_data_all <- dplyr:: select(data, Name, Calories, Protein, Fat, Sodium, Carbo, Sugars, Potass, Weight, Vitamins, Fiber)
+rownames(clust_data_all) <- clust_data$Name
+
+# z standardize except for Name column
+z_clust_data_all <- scale(clust_data_all[,-1]) 
+
+
+# silhoutte method
+fviz_nbclust(z_clust_data_all, kmeans, method = "silhouette") + geom_vline(xintercept = 2, linetype = 2) +
+  labs(subtitle = "Silhouette Method")
+
+```
+
+## Appendix E
+
+**Min-max normalization**
+
+```{r}
+
+# silhoutte method
+fviz_nbclust(norm_clust_data, kmeans, method = "silhouette") + geom_vline(xintercept = 2, linetype = 2) +
+  labs(subtitle = "Silhouette Method")
+```
+
+As in the previous graphs, according to the Silhouette Method, the optimal number of clusters is 2 and 4.
+
+```{r}
+# k = 2
+set.seed(123)
+km.2<- eclust(norm_clust_data, "kmeans", k=2, graph = FALSE, hc_metric = "euclidean")
+
+# cluster plot
+fviz_cluster(km.2, geom = "point", ellipse.type = "norm", palette = "jco", ggtheme = theme_minimal())
+
+# silhoutte plot
+fviz_silhouette(km.2, palette = "jco", ggtheme = theme_classic())
+
+# cluster centers
+table(km.2$cluster)
+km.2$centers
+
+```
+
+The average silhoutte width is 0.45, which is not terrible, but having the largest silhouette width, alone, is not grounds for accepting that as the ultimate fit. In addition to previous results using k = 2, having only two clusters may not actually make sense in the context of this problem as there isn't clear separation between the two clusters in any of the trials and from previous steps, we know k = 4 (or even k = 8) provides more useful information about the cereals.
+
+Assessing the cluster means for k = 2 with the normalized data, we see there aren't any outstanding features between the two groups. For cluster 1, the min-max score is 0.43 for Calories, and 0.647 for Carbo, with cluster 2 taking on 0.608 for Calories and 0.434 for Carbo. Because the data was normalized, the values lie on a scale of 0-1, with 0.5 indicating average/midpoint. The values 0.608/0.647 and 0.434/0.43 are not very different from 0.5 and it would be a stretch to say the variables take on defining characteristics from these means. The exception to this is for Sugars which is 0.225 for cluster 1 and 0.722 for cluster 2, so it could be argued cluster one is lower than average sugar while cluster 2 is higher than average sugar, but this alone would not justify the use of only two clusters.
+
+## Appendix F
+
+**Testing and Training set**
+
+```{r}
+
+set.seed(123456)
+index<- 1:74
+
+train_index<- sample(index, size = 60, replace = FALSE) 
+train_index # gives rows
+
+
+# training set
+train_data <- data[train_index, ]
+#train_data
+
+# testing set
+test_data<- data[-train_index,]
+#test_data
+
+# z scores 
+z_data_train <- scale(train_data[,2:11])
+z_data_test <- scale(test_data[,2:11])
+
+
+# clustering with training set
+train_km.4<- eclust(z_data_train, "kmeans", k=4, graph = FALSE, hc_metric = "euclidean", nstart=25)
+
+fviz_cluster(train_km.4, geom = "point", ellipse.type = "norm", palette = "jco", ggtheme = theme_minimal())
+fviz_silhouette(train_km.4, palette = "jco", ggtheme = theme_classic())
+
+# clustering with test set 
+test_km.4<- eclust(z_data_test, "kmeans", k=4, graph = FALSE, hc_metric = "euclidean", nstart=25)
+
+fviz_cluster(test_km.4, geom = "point", ellipse.type = "norm", palette = "jco", ggtheme = theme_minimal())
+fviz_silhouette(test_km.4, palette = "jco", ggtheme = theme_classic())
+
+
+```

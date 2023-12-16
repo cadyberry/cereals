@@ -12,8 +12,8 @@ In this project, I explored the clustering of cereals based on nutritional infor
 
 ### Data
 
-I delved into the descriptive statistics of the dataset, utilizing various plots and tables to showcase relationships between variables. Check out the visualizations in the Rmd file.
 
+* **Descriptive Statistics**: Summary statistics, correlations matrix and histograms. 
 * **Limitations**: Explored any limitations in the dataset.
 * **Missing Data**: Addressed missing data concerns.
 
